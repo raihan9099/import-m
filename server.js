@@ -28,7 +28,7 @@ bbySchema.index({ question: 1 });
 
 const BbyData = mongoose.model('BbyData', bbySchema);
 
-const DIPTO_API = "https://noobs-api.top/dipto/baby";
+const DIPTO_API = "https://noobs-api.top/dipto/baby2";
 
 function normalizeQ(q) {
     return String(q || "").trim().toLowerCase();
