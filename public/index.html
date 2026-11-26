@@ -30,7 +30,6 @@
 <div class="container">
     <h1>🤖 Bby API Data Importer</h1>
 
-    <!-- ইমপোর্ট সেকশন -->
     <div class="import-section">
         <h2>📥 Import Data from Bby API</h2>
         <p>বাটনে ক্লিক করলে আপনার bby API থেকে সব রিপ্লাই এনে ডাটাবেসে সেভ হবে।</p>
@@ -38,10 +37,8 @@
         <div id="importMessage" class="message-box"></div>
     </div>
 
-    <!-- সার্চ বক্স -->
     <input type="text" id="searchInput" class="search-box" placeholder="🔍 প্রশ্ন খুঁজুন..." onkeyup="filterData()">
 
-    <!-- ডেটা লিস্ট -->
     <ul id="dataList" class="data-list">
         <li style="text-align: center; color: #888;">ডেটা লোড হচ্ছে...</li>
     </ul>
@@ -51,7 +48,6 @@
     const API_BASE = '/api';
     let allData = [];
 
-    // ডেটা লোড করা
     async function fetchData() {
         try {
             const response = await fetch(`${API_BASE}/bby-data`);
@@ -59,17 +55,16 @@
             allData = result.data || [];
             renderData(allData);
         } catch (error) {
-            document.getElementById('dataList').innerHTML = '<li style="color:red; text-align:center;">ডেটা লোড করতে সমস্যা হয়েছে!</li>';
+            document.getElementById('dataList').innerHTML = '<li style="color:red; text-align:center;">ডেটা লোড করতে সমস্যা হয়েছে!</li>';
         }
     }
 
-    // ডেটা রেন্ডার করা
     function renderData(dataArray) {
         const list = document.getElementById('dataList');
         list.innerHTML = '';
 
         if (dataArray.length === 0) {
-            list.innerHTML = '<li style="text-align:center; color:#888;">কোনো ডেটা পাওয়া যায়নি। ইমপোর্ট বাটনে ক্লিক করুন।</li>';
+            list.innerHTML = '<li style="text-align:center; color:#888;">কোনো ডেটা পাওয়া যায়নি। ইমপোর্ট বাটনে ক্লিক করুন।</li>';
             return;
         }
 
@@ -87,7 +82,6 @@
         });
     }
 
-    // ইমপোর্ট করা
     async function importBbyData() {
         const btn = document.getElementById('importBtn');
         const msgBox = document.getElementById('importMessage');
@@ -103,7 +97,7 @@
             if (response.ok) {
                 msgBox.style.color = "green";
                 msgBox.innerText = result.message;
-                fetchData(); // লিস্ট রিফ্রেশ
+                fetchData();
             } else {
                 msgBox.style.color = "red";
                 msgBox.innerText = result.error;
@@ -117,18 +111,16 @@
         }
     }
 
-    // ডেটা ডিলিট করা
     async function deleteData(id) {
         if(!confirm("আপনি কি নিশ্চিত এটি ডিলিট করতে চান?")) return;
         try {
             await fetch(`${API_BASE}/bby-data/${id}`, { method: 'DELETE' });
-            fetchData(); // লিস্ট রিফ্রেশ
+            fetchData();
         } catch (error) {
-            alert("ডিলিট করতে সমস্যা হয়েছে!");
+            alert("ডিলিট করতে সমস্যা হয়েছে!");
         }
     }
 
-    // সার্চ ফিল্টার
     function filterData() {
         const query = document.getElementById('searchInput').value.toLowerCase();
         const filtered = allData.filter(item => 
@@ -138,7 +130,6 @@
         renderData(filtered);
     }
 
-    // পেজ লোড হলে ডেটা নিয়ে আসা
     window.onload = fetchData;
 </script>
 
