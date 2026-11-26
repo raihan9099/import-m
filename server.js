@@ -25,13 +25,22 @@ const BbyData = mongoose.model('BbyData', bbySchema);
 let isImporting = false;
 let importProgress = { total: 0, current: 0, imported: 0, skipped: 0, status: "idle", errorMsg: "" };
 
+// ✅ ঠিক করা isValidReply — যেকোনো টাইপকে নিরাপদে স্ট্রিং-এ কনভার্ট করে
 function isValidReply(question, answer) {
-    if (!question || !answer) return false;
-    const q = question.trim();
-    const a = answer.trim();
-    
-    if (q.length < 4) return false;
+    if (question === null || question === undefined) return false;
+    if (answer === null || answer === undefined) return false;
 
+    // object/array হলে সরাসরি বাদ (nested data)
+    if (typeof answer === 'object') return false;
+    if (typeof question === 'object') return false;
+
+    const q = String(question).trim();
+    const a = String(answer).trim();
+
+    if (q.length < 4) return false;
+    if (a.length === 0) return false;
+
+    // প্রশ্নে সংখ্যা থাকলে বাদ
     const numberRegex = /[0-9]/;
     if (numberRegex.test(q)) return false;
 
@@ -50,20 +59,17 @@ app.post('/api/import-bby', async (req, res) => {
 
     try {
         const apiUrl = "https://noobs-api.top/dipto/baby?list=all";
-        // Timeout বাড়ানো হলো এবং হেডার দেওয়া হলো
-        const response = await axios.get(apiUrl, { 
+        const response = await axios.get(apiUrl, {
             timeout: 15000,
             headers: { 'User-Agent': 'Mozilla/5.0' }
         });
-        
+
         const data = response.data;
-        
-        // যদি API ডেটা রিটার্ন না করে বা ডেটা ফরম্যাট ভিন্ন হয়
+
         if (!data) {
             throw new Error("API থেকে কোনো ডেটা পাওয়া যায়নি (Empty Response)।");
         }
 
-        // ডেটা স্ট্রাকচার চেক করা (API পরিবর্তন হলে যাতে ধরা পড়ে)
         let teacherList = [];
         if (data.teacher && Array.isArray(data.teacher.teacherList)) {
             teacherList = data.teacher.teacherList;
@@ -74,17 +80,39 @@ app.post('/api/import-bby', async (req, res) => {
         }
 
         importProgress.total = teacherList.length;
+        const teacherName = (data.teacher && data.teacher.name) ? data.teacher.name : "Unknown";
 
         for (let item of teacherList) {
             importProgress.current++;
-            
+
             let question = "";
             let answer = "";
 
-            // ডেটা রিড করার সঠিক পদ্ধতি
-            if (typeof item === 'object' && item !== null) {
-                question = Object.keys(item)[0];
-                answer = item[question];
+            if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
+                const keys = Object.keys(item);
+                if (keys.length > 0) {
+                    question = keys[0];
+                    const rawAnswer = item[question];
+
+                    // ✅ answer টাইপ চেক — object/array/null হলে skip
+                    if (rawAnswer === null || rawAnswer === undefined) {
+                        importProgress.skipped++;
+                        continue;
+                    }
+                    if (typeof rawAnswer === 'object') {
+                        importProgress.skipped++;
+                        continue;
+                    }
+                    answer = String(rawAnswer);
+                }
+            } else {
+                importProgress.skipped++;
+                continue;
+            }
+
+            // ডিবাগ লগ (প্রথম ৩টি item)
+            if (importProgress.current <= 3) {
+                console.log(`[DEBUG] item#${importProgress.current} | qType=${typeof question} aType=${typeof answer} | Q="${String(question).slice(0,40)}" A="${String(answer).slice(0,40)}"`);
             }
 
             if (!isValidReply(question, answer)) {
@@ -92,25 +120,32 @@ app.post('/api/import-bby', async (req, res) => {
                 continue;
             }
 
-            const exists = await BbyData.findOne({ question: question });
+            const qTrim = String(question).trim();
+            const aTrim = String(answer).trim();
+
+            const exists = await BbyData.findOne({ question: qTrim });
             if (!exists) {
-                const newData = new BbyData({
-                    question: question,
-                    answer: answer,
-                    teacher: (data.teacher && data.teacher.name) ? data.teacher.name : "Unknown"
-                });
-                await newData.save();
-                importProgress.imported++;
+                try {
+                    const newData = new BbyData({
+                        question: qTrim,
+                        answer: aTrim,
+                        teacher: teacherName
+                    });
+                    await newData.save();
+                    importProgress.imported++;
+                } catch (saveErr) {
+                    // duplicate key বা অন্য save error হলে skip
+                    importProgress.skipped++;
+                }
             } else {
                 importProgress.skipped++;
             }
         }
         importProgress.status = "completed";
-        
+
     } catch (error) {
         console.error("Import Error Details:", error.message);
         importProgress.status = "error";
-        // আসল এরর মেসেজটি সেভ করে রাখছি
         importProgress.errorMsg = error.message || "Unknown Error";
     } finally {
         isImporting = false;
@@ -172,7 +207,7 @@ app.get('/', (req, res) => {
 <body>
 <div class="container">
     <h1>🤖 Bby API Data Importer</h1>
-    
+
     <div class="import-section">
         <h2>📥 Import Data</h2>
         <p>৪ অক্ষরের বেশি এবং সংখ্যাবিহীন রিপ্লাইগুলো সেভ হবে।</p>
@@ -181,7 +216,7 @@ app.get('/', (req, res) => {
     </div>
 
     <input type="text" id="searchInput" class="search-box" placeholder="🔍 Search..." onkeyup="filterData()">
-    
+
     <ul id="dataList" class="data-list">
         <li style="text-align: center; color: #888;">Loading data...</li>
     </ul>
@@ -203,6 +238,16 @@ app.get('/', (req, res) => {
         }
     }
 
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     function renderData(dataArray) {
         const list = document.getElementById('dataList');
         list.innerHTML = '';
@@ -215,8 +260,8 @@ app.get('/', (req, res) => {
             li.className = 'data-item';
             li.innerHTML = \`
                 <div class="data-content">
-                    <div class="question">Q: \${item.question} <span class="teacher-badge">👨‍🏫 \${item.teacher}</span></div>
-                    <div class="answer">A: \${item.answer}</div>
+                    <div class="question">Q: \${escapeHtml(item.question)} <span class="teacher-badge">👨‍🏫 \${escapeHtml(item.teacher)}</span></div>
+                    <div class="answer">A: \${escapeHtml(item.answer)}</div>
                 </div>
                 <button class="btn-delete" onclick="deleteData('\${item._id}')">Delete</button>
             \`;
@@ -228,11 +273,11 @@ app.get('/', (req, res) => {
         const btn = document.getElementById('importBtn');
         btn.disabled = true;
         btn.innerText = "Starting...";
-        
+
         try {
             const response = await fetch(\`\${API_BASE}/import-bby\`, { method: 'POST' });
             const result = await response.json();
-            
+
             if (response.ok) {
                 if(statusInterval) clearInterval(statusInterval);
                 statusInterval = setInterval(checkImportStatus, 1000);
@@ -263,20 +308,19 @@ app.get('/', (req, res) => {
                 msgBox.innerText = \`⏳ ইমপোর্ট চলছে... (Total: \${status.total} | Done: \${status.current} | Saved: \${status.imported} | Skipped: \${status.skipped})\`;
                 btn.disabled = true;
                 btn.innerText = "Importing...";
-                fetchData(); 
-            } 
+                fetchData();
+            }
             else if (status.status === "completed") {
                 msgBox.style.color = "green";
                 msgBox.innerText = \`✅ ইমপোর্ট সম্পন্ন! Total: \${status.total} | Saved: \${status.imported} | Skipped: \${status.skipped}\`;
                 btn.disabled = false;
                 btn.innerText = "Import Now";
                 clearInterval(statusInterval);
-                fetchData(); 
-            } 
+                fetchData();
+            }
             else if (status.status === "error") {
                 msgBox.style.color = "red";
-                // এখানে আসল এররটি দেখাবে
-                msgBox.innerHTML = \`❌ ইমপোর্ট ব্যর্থ! <br><small>কারণ: \${status.errorMsg}</small>\`;
+                msgBox.innerHTML = \`❌ ইমপোর্ট ব্যর্থ! <br><small>কারণ: \${escapeHtml(status.errorMsg)}</small>\`;
                 btn.disabled = false;
                 btn.innerText = "Import Now";
                 clearInterval(statusInterval);
@@ -298,9 +342,9 @@ app.get('/', (req, res) => {
 
     function filterData() {
         const query = document.getElementById('searchInput').value.toLowerCase();
-        const filtered = allData.filter(item => 
-            item.question.toLowerCase().includes(query) || 
-            item.answer.toLowerCase().includes(query)
+        const filtered = allData.filter(item =>
+            String(item.question).toLowerCase().includes(query) ||
+            String(item.answer).toLowerCase().includes(query)
         );
         renderData(filtered);
     }
@@ -325,5 +369,5 @@ app.get('/', (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(\`Server running on port \${PORT}\`);
 });
