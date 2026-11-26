@@ -1,0 +1,4 @@
+{
+  "PORT": 5000,
+  "MONGO_URI": "mongodb+srv://fultulisupport_db_user:OwG92LJplK6l4cAD@entry-fultuli.ohp3ond.mongodb.net/milow?retryWrites=true&w=majority"
+}
