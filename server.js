@@ -14,7 +14,7 @@ mongoose.connect(MONGO_URI)
   .catch(err => console.error("❌ MongoDB Connection Error:", err.message));
 
 const bbySchema = new mongoose.Schema({
-  question: { type: String, required: true },
+  question: { type: String, required: true, unique: true },
   answer: { type: String, required: true },
   teacher: { type: String, default: "Unknown" },
   importedAt: { type: Date, default: Date.now }
@@ -22,20 +22,16 @@ const bbySchema = new mongoose.Schema({
 
 const BbyData = mongoose.model('BbyData', bbySchema);
 
-// গ্লোবাল ভ্যারিয়েবল যা ব্যাকগ্রাউন্ড স্টেট ট্র্যাক করবে
 let isImporting = false;
-let importProgress = { total: 0, current: 0, imported: 0, skipped: 0, status: "idle" };
+let importProgress = { total: 0, current: 0, imported: 0, skipped: 0, status: "idle", errorMsg: "" };
 
-// ডেটা ফিল্টার করার ফাংশন (শুধু ৪ অক্ষরের বেশি এবং সংখ্যা ছাড়া)
 function isValidReply(question, answer) {
     if (!question || !answer) return false;
     const q = question.trim();
     const a = answer.trim();
     
-    // ৪ অক্ষরের কম হলে বাদ
     if (q.length < 4) return false;
 
-    // সংখ্যা থাকলে বাদ (যেমন: 1928, 28)
     const numberRegex = /[0-9]/;
     if (numberRegex.test(q)) return false;
 
@@ -48,42 +44,60 @@ app.post('/api/import-bby', async (req, res) => {
     }
 
     isImporting = true;
-    importProgress = { total: 0, current: 0, imported: 0, skipped: 0, status: "running" };
+    importProgress = { total: 0, current: 0, imported: 0, skipped: 0, status: "running", errorMsg: "" };
 
-    // রেসপন্স সাথে সাথে পাঠিয়ে দেওয়া হচ্ছে যাতে ইউজার পেজ রিফ্রেশ করলেও সমস্যা না হয়
-    res.status(200).json({ message: "ইমপোর্ট ব্যাকগ্রাউন্ডে শুরু হয়েছে..." });
+    res.status(200).json({ message: "ইমপোর্ট শুরু হয়েছে..." });
 
-    // ব্যাকগ্রাউন্ডে ইমপোর্ট প্রসেস
     try {
         const apiUrl = "https://noobs-api.top/dipto/baby?list=all";
-        const response = await axios.get(apiUrl);
+        // Timeout বাড়ানো হলো এবং হেডার দেওয়া হলো
+        const response = await axios.get(apiUrl, { 
+            timeout: 15000,
+            headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        
         const data = response.data;
-
-        if (!data || !data.teacher || !data.teacher.teacherList) {
-            throw new Error("API ডেটা ফরম্যাট সঠিক নয়।");
+        
+        // যদি API ডেটা রিটার্ন না করে বা ডেটা ফরম্যাট ভিন্ন হয়
+        if (!data) {
+            throw new Error("API থেকে কোনো ডেটা পাওয়া যায়নি (Empty Response)।");
         }
 
-        const teacherList = data.teacher.teacherList;
+        // ডেটা স্ট্রাকচার চেক করা (API পরিবর্তন হলে যাতে ধরা পড়ে)
+        let teacherList = [];
+        if (data.teacher && Array.isArray(data.teacher.teacherList)) {
+            teacherList = data.teacher.teacherList;
+        } else if (Array.isArray(data)) {
+            teacherList = data;
+        } else {
+            throw new Error("API ডেটা ফরম্যাট অপ্রত্যাশিত। API ডেভেলপার ফরম্যাট পরিবর্তন করেছেন কি না চেক করুন।");
+        }
+
         importProgress.total = teacherList.length;
 
         for (let item of teacherList) {
             importProgress.current++;
-            const question = Object.keys(item)[0];
-            const answer = item[question];
+            
+            let question = "";
+            let answer = "";
 
-            // ফিল্টার চেক
+            // ডেটা রিড করার সঠিক পদ্ধতি
+            if (typeof item === 'object' && item !== null) {
+                question = Object.keys(item)[0];
+                answer = item[question];
+            }
+
             if (!isValidReply(question, answer)) {
                 importProgress.skipped++;
                 continue;
             }
 
-            // ডুপ্লিকেট চেক
             const exists = await BbyData.findOne({ question: question });
             if (!exists) {
                 const newData = new BbyData({
                     question: question,
                     answer: answer,
-                    teacher: data.teacher.name || "Unknown"
+                    teacher: (data.teacher && data.teacher.name) ? data.teacher.name : "Unknown"
                 });
                 await newData.save();
                 importProgress.imported++;
@@ -92,17 +106,18 @@ app.post('/api/import-bby', async (req, res) => {
             }
         }
         importProgress.status = "completed";
+        
     } catch (error) {
-        console.error("Import Error:", error.message);
+        console.error("Import Error Details:", error.message);
         importProgress.status = "error";
+        // আসল এরর মেসেজটি সেভ করে রাখছি
+        importProgress.errorMsg = error.message || "Unknown Error";
     } finally {
         isImporting = false;
-        // ৩০ সেকেন্ড পর স্টেট রিসেট হবে
-        setTimeout(() => { importProgress = { total: 0, current: 0, imported: 0, skipped: 0, status: "idle" }; }, 30000);
+        setTimeout(() => { importProgress = { total: 0, current: 0, imported: 0, skipped: 0, status: "idle", errorMsg: "" }; }, 30000);
     }
 });
 
-// ইমপোর্টের বর্তমান অবস্থা জানার API
 app.get('/api/import-status', (req, res) => {
     res.status(200).json(importProgress);
 });
@@ -177,7 +192,6 @@ app.get('/', (req, res) => {
     let allData = [];
     let statusInterval = null;
 
-    // ডেটা লোড করা
     async function fetchData() {
         try {
             const response = await fetch(\`\${API_BASE}/bby-data\`);
@@ -189,7 +203,6 @@ app.get('/', (req, res) => {
         }
     }
 
-    // ডেটা রেন্ডার করা
     function renderData(dataArray) {
         const list = document.getElementById('dataList');
         list.innerHTML = '';
@@ -211,7 +224,6 @@ app.get('/', (req, res) => {
         });
     }
 
-    // ইমপোর্ট শুরু করা এবং স্ট্যাটাস চেক করা
     async function startImport() {
         const btn = document.getElementById('importBtn');
         btn.disabled = true;
@@ -222,10 +234,9 @@ app.get('/', (req, res) => {
             const result = await response.json();
             
             if (response.ok) {
-                // স্ট্যাটাস চেক করা শুরু করা
                 if(statusInterval) clearInterval(statusInterval);
                 statusInterval = setInterval(checkImportStatus, 1000);
-                checkImportStatus(); // সাথে সাথে একবার চেক করা
+                checkImportStatus();
             } else {
                 document.getElementById('statusMessage').style.color = "red";
                 document.getElementById('statusMessage').innerText = result.error;
@@ -240,7 +251,6 @@ app.get('/', (req, res) => {
         }
     }
 
-    // স্ট্যাটাস চেক করার লজিক
     async function checkImportStatus() {
         try {
             const response = await fetch(\`\${API_BASE}/import-status\`);
@@ -253,7 +263,7 @@ app.get('/', (req, res) => {
                 msgBox.innerText = \`⏳ ইমপোর্ট চলছে... (Total: \${status.total} | Done: \${status.current} | Saved: \${status.imported} | Skipped: \${status.skipped})\`;
                 btn.disabled = true;
                 btn.innerText = "Importing...";
-                fetchData(); // লাইভ ডেটা আপডেট দেখানোর জন্য
+                fetchData(); 
             } 
             else if (status.status === "completed") {
                 msgBox.style.color = "green";
@@ -261,11 +271,12 @@ app.get('/', (req, res) => {
                 btn.disabled = false;
                 btn.innerText = "Import Now";
                 clearInterval(statusInterval);
-                fetchData(); // ফাইনাল ডেটা লোড
+                fetchData(); 
             } 
             else if (status.status === "error") {
                 msgBox.style.color = "red";
-                msgBox.innerText = "❌ ইমপোর্ট করতে সমস্যা হয়েছে!";
+                // এখানে আসল এররটি দেখাবে
+                msgBox.innerHTML = \`❌ ইমপোর্ট ব্যর্থ! <br><small>কারণ: \${status.errorMsg}</small>\`;
                 btn.disabled = false;
                 btn.innerText = "Import Now";
                 clearInterval(statusInterval);
@@ -275,7 +286,6 @@ app.get('/', (req, res) => {
         }
     }
 
-    // ডিলিট করা
     async function deleteData(id) {
         if(!confirm("Are you sure you want to delete?")) return;
         try {
@@ -286,7 +296,6 @@ app.get('/', (req, res) => {
         }
     }
 
-    // সার্চ ফিল্টার
     function filterData() {
         const query = document.getElementById('searchInput').value.toLowerCase();
         const filtered = allData.filter(item => 
@@ -296,10 +305,8 @@ app.get('/', (req, res) => {
         renderData(filtered);
     }
 
-    // পেজ লোড হলে চেক করবে ইমপোর্ট চলছে কিনা, এবং ডেটা লোড করবে
     window.onload = () => {
         fetchData();
-        // যদি পেজ রিফ্রেশ করার পরও ইমপোর্ট চলতে থাকে, স্ট্যাটাস চেক করা শুরু করবে
         fetch(\`\${API_BASE}/import-status\`)
             .then(res => res.json())
             .then(status => {
